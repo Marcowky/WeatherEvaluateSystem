@@ -3,6 +3,7 @@ from util.multi_thread import run_in_threads
 from model.client import ModelClient
 from prompt.evaluation_prompt import task4_prompt
 from util.data_process import save_json, str_to_json
+from copy import deepcopy
 
 class Task4Scorer(TwoStageScorer):
     """Task4 评分器：负责信息抽取+两阶段评分的调度"""
@@ -10,37 +11,75 @@ class Task4Scorer(TwoStageScorer):
         super().__init__(result_folder=result_folder)
         self.name = 'task4'
 
+
     def info_extract(self, model_result):
+        """信息抽取接口实现，首先调用大模型提取结构化信息，然后对地理位置进行规范化"""
         # 处理 model_result，提取所需信息
         self.client = ModelClient()  # 初始化客户端，避免在多线程中重复创建
 
-        extracted_infos = self.natural_language_to_json_format(
-            [res['model_output'] for res in model_result]
-        )
-        
-        # 针对每条模型输出进行解析与校验
-        for i, extracted_info in enumerate(extracted_infos):
-            try:
-                json_res = str_to_json(extracted_info)
-                if not self.validate_extracted_info(json_res):
-                    print(f"Invalid extracted_info format for index {i}: {json_res}")
-                model_result[i]['extracted_info'] = json_res
-            except Exception as e:
-                print(f"Error parsing extracted_info for index {i}: {e}")
-        
-        # 将带有抽取结果的列表落盘，便于复查
-        save_json(model_result, f'{self.result_folder}/task4_extracted_info.json')
+        model_result = self.info_extract_by_llm(model_result)
         
         return model_result
+
 
     def info_scoring(self, extracted_info):
         # Implement the scoring logic specific to Task 4
         scoring_result = {}
         # ... scoring code ...
         return scoring_result
-    
+
+
+    def info_extract_by_llm(self, old_model_result):
+        """使用 LLM 对模型输出进行信息抽取，返回带有抽取结果的列表"""
+        model_result = deepcopy(old_model_result)
+        pending_indices = list(range(len(model_result)))
+        invalid_payloads = {}
+        max_attempts = 5
+        attempts = 0
+
+        while pending_indices and attempts < max_attempts:
+            print(f"Info extraction attempt {attempts + 1}, pending items: {len(pending_indices)}")
+            attempts += 1
+            extracted_infos = self.natural_language_to_json_format(
+                [model_result[idx]['model_output'] for idx in pending_indices]
+            )
+
+            next_pending = []
+            for idx, extracted_info in zip(pending_indices, extracted_infos):
+                json_res = None
+                is_valid = False
+
+                try:
+                    json_res = str_to_json(extracted_info)
+                    is_valid = self.validate_extracted_info(json_res)
+                    if not is_valid:
+                        print(f"Invalid extracted_info format for index {idx}: {json_res}")
+                    else:
+                        model_result[idx]['extracted_info'] = json_res
+                        if idx in invalid_payloads:
+                            invalid_payloads.pop(idx)
+                except Exception as e:
+                    print(f"Error parsing extracted_info for index {idx}: {e}")
+
+                if not is_valid:
+                    next_pending.append(idx)
+                    invalid_payloads[idx] = json_res if json_res is not None else extracted_info
+
+            pending_indices = next_pending
+
+        # 经过多次尝试仍无法通过校验的结果使用 error_res 标记
+        for idx in pending_indices:
+            model_result[idx]['extracted_info'] = {"error_res": invalid_payloads.get(idx)}
+
+        # 将带有抽取结果的列表落盘，便于复查
+        save_json(model_result, f'{self.result_folder}/task4_extracted_info.json')
+        
+        return model_result
+
+
     def natural_language_to_json_format(self, nl_texts: list) -> dict:
-        # 将自然语言描述转化为结构化 JSON
+        """将自然语言描述转化为结构化 JSON"""
+        max_workers = 20
         prompt = task4_prompt.EXTRACT_INFO  # 固定提示词模板
         orgnized_prompts = [prompt.format(original_text=nl_text) for nl_text in nl_texts]
 
@@ -53,10 +92,12 @@ class Task4Scorer(TwoStageScorer):
         }
 
         # 多线程向模型发送请求，提升批量抽取效率
-        extracted_infos = run_in_threads(self.client.chat_with_prompt_return_text, args_list_dict, max_workers=5)
+        extracted_infos = run_in_threads(self.client.chat_with_prompt_return_text, args_list_dict, max_workers=max_workers)
         return extracted_infos
-    
+
+
     def validate_extracted_info(self, extracted_info: dict) -> bool:
+        """校验抽取结果的格式是否符合预期"""
         # 判断字段是否齐全
         required_fields = ['specific_regions', 'other_regions', 'max_temp']
         for field in required_fields:
