@@ -6,4 +6,4 @@ from evaluation.task4.scorer import Task4Scorer
 
 scorer = Task4Scorer()
 
-scorer.score('aa')
+print(scorer.score('/home/kaiyu/Project/WeatherEvaluateSystem/data/task4/2024/Qwen2.5-VL-7B-Instruct.json'))
