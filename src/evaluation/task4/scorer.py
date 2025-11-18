@@ -1,6 +1,6 @@
 from evaluation.scorer_two_stage import TwoStageScorer
-from util.multi_thread import run_in_threads
 from model.client import ModelClient
+from model.call_api import call_llm_for_data_cleaning_or_analysis
 from prompt.evaluation_prompt import task4_prompt
 from util.data_process import save_json, str_to_json
 from copy import deepcopy
@@ -79,20 +79,16 @@ class Task4Scorer(TwoStageScorer):
 
     def natural_language_to_json_format(self, nl_texts: list) -> dict:
         """将自然语言描述转化为结构化 JSON"""
-        max_workers = 20
         prompt = task4_prompt.EXTRACT_INFO  # 固定提示词模板
         orgnized_prompts = [prompt.format(original_text=nl_text) for nl_text in nl_texts]
 
-        args_list_dict = {
-            "model": "deepseek-ai/DeepSeek-V3",
-            "prompt": orgnized_prompts,
-            "max_tokens": 2048,
-            "temperature": 0.1,
-            "response_format": {'type': 'json_object'},
-        }
-
         # 多线程向模型发送请求，提升批量抽取效率
-        extracted_infos = run_in_threads(self.client.chat_with_prompt_return_text, args_list_dict, max_workers=max_workers)
+        extracted_infos = call_llm_for_data_cleaning_or_analysis(
+            client=self.client,
+            model="deepseek-ai/DeepSeek-V3",
+            prompts=orgnized_prompts,
+            max_workers=20
+        )
         return extracted_infos
 
 
