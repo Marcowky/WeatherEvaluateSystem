@@ -3,10 +3,10 @@ from tqdm import tqdm
 
 def run_in_threads(func, args_list_dict: dict, max_workers: int = 5):
     # 验证每个 arg 的数量
-    args_len = -1
+    args_len = 1
     for key, value in args_list_dict.items():
         if isinstance(value, list):
-            if len(value) != args_len and args_len != -1:
+            if len(value) != args_len and args_len != 1:
                 raise ValueError("Inconsistent argument lengths in args_list_dict.")
             args_len = len(value)
     
@@ -23,7 +23,18 @@ def run_in_threads(func, args_list_dict: dict, max_workers: int = 5):
 
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(func, **kwargs) for kwargs in args_list]
+        futures = []
+        for kwargs in args_list:
+            try:
+                futures.append(executor.submit(func, **kwargs))
+            except Exception as e:
+                print(f"Error submitting task with args {kwargs}: {e}")
+                results.append(e)
+
         for future in tqdm(futures, desc="Processing", total=len(futures)):
-            results.append(future.result())
+            try:
+                results.append(future.result())
+            except Exception as e:
+                print(f"Error during task execution: {e}")
+                results.append(e)
     return results
