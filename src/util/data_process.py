@@ -1,5 +1,6 @@
 import json
 import os
+import yaml
 
 def path_preprocess(path: str) -> str:
     # 若已存在该路径，则报错
@@ -28,3 +29,7 @@ def save_jsonl(data: list, file_path: str) -> str:
         for item in data:
             f.write(json.dumps(item, ensure_ascii=False) + '\n')
     return file_path
+
+def load_yaml(file_path: str) -> dict:
+    with open(file_path, 'r') as f:
+        return yaml.safe_load(f)
