@@ -1,9 +1,11 @@
 from evaluation.scorer_two_stage import TwoStageScorer
 from model.client import ModelClient
 from model.call_api import call_llm_for_data_cleaning_or_analysis
-from prompt.evaluation_prompt import task4_prompt
+from prompt.evaluation_prompt import TASK4_PROMPT
 from util.data_process import save_json, str_to_json
 from copy import deepcopy
+from evaluation.util import geo_standardize
+from util.multi_thread import run_in_threads
 
 class Task4Scorer(TwoStageScorer):
     """Task4 评分器：负责信息抽取+两阶段评分的调度"""
@@ -17,9 +19,15 @@ class Task4Scorer(TwoStageScorer):
         # 处理 model_result，提取所需信息
         self.client = ModelClient()  # 初始化客户端，避免在多线程中重复创建
 
-        model_result = self.info_extract_by_llm(model_result)
+        model_result_with_extract_info = self.info_extract_by_llm(model_result)
+
+        save_json(model_result_with_extract_info, f'{self.result_folder}/task4_info_extract_by_llm.json')
+
+        model_result_with_extract_info_geo_standardize = self.geo_standardize(model_result_with_extract_info)
+
+        save_json(model_result_with_extract_info_geo_standardize, f'{self.result_folder}/task4_info_extract_geo_standardize.json')
         
-        return model_result
+        return model_result_with_extract_info_geo_standardize
 
 
     def info_scoring(self, extracted_info):
@@ -28,6 +36,40 @@ class Task4Scorer(TwoStageScorer):
         # ... scoring code ...
         return scoring_result
 
+
+    def geo_standardize(self, old_model_result):
+        model_result = deepcopy(old_model_result)
+        args_list_dict = {
+            "single_result": model_result,
+        }
+
+        # 多线程向模型发送请求，提升批量效率
+        results = run_in_threads(self.geo_standardize_single, args_list_dict, max_workers=20)
+
+        return results
+    
+
+    def geo_standardize_single(self, single_result):
+        single_info = single_result['extracted_info']
+        geo_set = set()
+        for region in single_info['specific_regions']:
+            geo_set.update(region['geo'])
+        if single_info['max_temp'] is not None:
+            geo_set.update(single_info['max_temp']['geo'])
+
+        std_geo_list = geo_standardize(list(geo_set))
+        ori_std_geo_map = {}
+        for ori_geo, std_geo in zip(geo_set, std_geo_list):
+            ori_std_geo_map[ori_geo] = std_geo
+
+        for i, region in enumerate(single_info['specific_regions']):
+            single_info['specific_regions'][i]['std_geo'] = [ori_std_geo_map[g] for g in region['geo']]
+        if single_info['max_temp'] is not None:
+            single_info['max_temp']['std_geo'] = [ori_std_geo_map[g] for g in single_info['max_temp']['geo']]
+
+        single_result['extracted_info'] = single_info
+
+        return single_result
 
     def info_extract_by_llm(self, old_model_result):
         """使用 LLM 对模型输出进行信息抽取，返回带有抽取结果的列表"""
@@ -70,16 +112,13 @@ class Task4Scorer(TwoStageScorer):
         # 经过多次尝试仍无法通过校验的结果使用 error_res 标记
         for idx in pending_indices:
             model_result[idx]['extracted_info'] = {"error_res": invalid_payloads.get(idx)}
-
-        # 将带有抽取结果的列表落盘，便于复查
-        save_json(model_result, f'{self.result_folder}/task4_extracted_info.json')
         
         return model_result
 
 
     def natural_language_to_json_format(self, nl_texts: list) -> dict:
         """将自然语言描述转化为结构化 JSON"""
-        prompt = task4_prompt.EXTRACT_INFO  # 固定提示词模板
+        prompt = TASK4_PROMPT.EXTRACT_INFO  # 固定提示词模板
         orgnized_prompts = [prompt.format(original_text=nl_text) for nl_text in nl_texts]
 
         # 多线程向模型发送请求，提升批量抽取效率

@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import traceback
 from tqdm import tqdm
 
 def run_in_threads(func, args_list_dict: dict, max_workers: int = 5):
@@ -29,6 +30,7 @@ def run_in_threads(func, args_list_dict: dict, max_workers: int = 5):
                 futures.append(executor.submit(func, **kwargs))
             except Exception as e:
                 print(f"Error submitting task with args {kwargs}: {e}")
+                traceback.print_exception(type(e), e, e.__traceback__)
                 results.append(e)
 
         for future in tqdm(futures, desc="Processing", total=len(futures)):
@@ -36,5 +38,6 @@ def run_in_threads(func, args_list_dict: dict, max_workers: int = 5):
                 results.append(future.result())
             except Exception as e:
                 print(f"Error during task execution: {e}")
+                traceback.print_exception(type(e), e, e.__traceback__)
                 results.append(e)
     return results

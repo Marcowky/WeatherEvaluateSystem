@@ -1,8 +1,10 @@
 import json
 import os
+import yaml
+import pandas as pd
+
 from .file_timestamp import get_timestamp
 
-import yaml
 
 def path_preprocess(path: str) -> str:
     # 若已存在该路径，则报错
@@ -42,3 +44,8 @@ def load_yaml(file_path: str) -> dict:
     
 def str_to_json(json_str: str) -> dict:
     return json.loads(json_str)
+
+def get_geo_division():
+    geo_division_path = 'data/station_info/地理划分_去除空列.csv'
+    geo_division_df = pd.read_csv(geo_division_path, dtype=str)
+    return geo_division_df
