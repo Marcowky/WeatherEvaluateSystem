@@ -1,19 +1,18 @@
-import yaml
-
 from openai import OpenAI
-from util.data_process import load_yaml
+
+from util.config import load_config
 
 
 class ModelClient:
-    def __init__(self, api_type: str = "siliconflow", config_path: str = "config.yaml"):
-        self.config = self.load_api_config(api_type=api_type, path=config_path)
+    def __init__(self, api_type: str = "siliconflow"):
+        self.config = self.load_api_config(api_type=api_type)
         self.client = OpenAI(
             api_key=self.config["api_key"], 
             base_url=self.config["base_url"]
         )
 
-    def load_api_config(self, api_type: str = "siliconflow", path: str = "config.yaml") -> dict:
-        config = load_yaml(path)["llm_api"][api_type]
+    def load_api_config(self, api_type: str = "siliconflow") -> dict:
+        config = load_config()["llm_api"][api_type]
         return config
 
     def chat_with_messages(self, model: str, messages: list, **kwargs) -> dict:
