@@ -36,9 +36,9 @@ class Task4Scorer(TwoStageScorer):
         return model_result_with_extract_info_geo_standardize
 
 
-    def info_scoring(self, extracted_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Task4 评分逻辑留空，由上层根据具体评估策略实现"""
-        return {}
+    def info_scoring(self, model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        model_result_with_accuracy_score = self.accuracy_scoring(model_result)
+        return model_result_with_accuracy_score
 
 
     def geo_standardize(self, old_model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -175,3 +175,30 @@ class Task4Scorer(TwoStageScorer):
                 return False
             
         return True
+
+
+    def accuracy_scoring(self, model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        for i, single_result in enumerate(model_result):
+            model_result[i]['accuracy_score'] = self.accuracy_scoring_single(single_result)
+        return model_result
+
+
+    def accuracy_scoring_single(self, single_result: Dict[str, Any]) -> Dict[str, Any]:
+        """对抽取结果进行准确率评分"""
+        geo_accuracy_score = self.geo_accuracy_scoring(single_result)
+        temp_accuracy_score = self.temp_accuracy_scoring(single_result)
+        accuracy_score = {
+            'geo_accuracy': geo_accuracy_score,
+            'temp_accuracy': temp_accuracy_score,
+        }
+        return accuracy_score
+
+
+    def geo_accuracy_scoring(self, single_result: Dict[str, Any]):
+        """对抽取结果进行准确率评分"""
+        return 0.0
+
+
+    def temp_accuracy_scoring(self, single_result: Dict[str, Any]):
+        """对抽取结果进行准确率评分"""
+        return 0.0

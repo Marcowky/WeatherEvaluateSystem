@@ -9,7 +9,7 @@ class TwoStageScorer(BaseScorer):
     def info_extract(self, model_result):
         raise NotImplementedError
         
-    def info_scoring(self, extracted_info):
+    def info_scoring(self, model_result):
         raise NotImplementedError
 
     def score(self, path) -> str:
