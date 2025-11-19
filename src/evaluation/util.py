@@ -1,7 +1,26 @@
+import pandas as pd
 from model.client import ModelClient
 from model.call_api import call_llm_for_data_cleaning_or_analysis
 from util.data_process import get_geo_division, str_to_json
 from prompt.evaluation_prompt import UTIL_PROMPT
+
+
+def get_geo_stationid_map() -> dict[str, list[str]]:
+    """获取地理位置名称到站点ID的映射字典"""
+    geo_division_df = get_geo_division()
+    # 遍历所有列，收集地理位置名称和对应的站点ID
+    geo_stationid_map = {}
+    for _, row in geo_division_df.iterrows():
+        station_id = row['站号+A:K']
+        for column in geo_division_df.columns[1:]:
+            geo_name = row[column]
+            # 若非空
+            if pd.notna(geo_name):
+                if geo_name not in geo_stationid_map:
+                    geo_stationid_map[geo_name] = []
+                geo_stationid_map[geo_name].append(station_id)
+    return geo_stationid_map
+
 
 def get_geo_dict_list():
     """获取地理位置名称列表"""
