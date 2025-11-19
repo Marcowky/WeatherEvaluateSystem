@@ -1,3 +1,4 @@
+import os
 import sys
 
 # 允许脚本在直接运行时也能加载 src 下的模块
@@ -5,10 +6,12 @@ sys.path.append('src')
 
 from util.data_process import load_json, save_json
 from typing import Any, Dict, List
-from evaluation.metric import geo_list_iou
+from evaluation.metric import geo_list_iou, number_range_scoring, set_iou, geo_list_match_and_iou, number_precise_scoring
 from evaluation.util import geo_list_to_stationid, get_station_id_set
-from evaluation.metric import set_iou, geo_list_match_and_iou
 from tqdm import tqdm
+import pandas as pd
+
+CSV_FOLDER = "/home/kaiyu/Project/WeatherEvaluateSystem/data/task4/2024/tmax"
 
 def get_label_dict():
     """加载标准答案，构建字典以便快速查询"""
@@ -18,7 +21,7 @@ def get_label_dict():
         label_dict[item['qid']] = item
     return label_dict
 
-label_dict = get_label_dict()
+LABEL_DICT = get_label_dict()
 
 
 def accuracy_scoring(model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -44,7 +47,7 @@ def geo_accuracy_scoring(single_result: Dict[str, Any]):
     """对单个抽取结果进行准确率评分"""
     single_result_extracted_info = single_result['extracted_info']
     # 根据 qid 获取标准答案的抽取结果
-    label_extracted_info = label_dict[single_result['qid']]['extracted_info']
+    label_extracted_info = LABEL_DICT[single_result['qid']]['extracted_info']
     # 计算 max_temp 部分的地理准确率
     single_max_temp = single_result_extracted_info.get('max_temp') or {}
     label_max_temp = label_extracted_info.get('max_temp') or {}
@@ -91,7 +94,91 @@ def get_other_station_id(extracted_info: Dict[str, Any]) -> set:
 
 def temp_accuracy_scoring(single_result: Dict[str, Any]):
     """对单个抽取结果进行准确率评分"""
-    return 0.0
+    qid = single_result['qid']
+    single_result_extracted_info = single_result['extracted_info']
+    # 根据 qid 获取标准答案的抽取结果
+    label_extracted_info = LABEL_DICT[qid]['extracted_info']
+    # 计算 max_temp 部分的温度准确率
+    single_max_temp = (single_result_extracted_info.get('max_temp') or {}).get('tmax', None)
+    label_max_temp = (label_extracted_info.get('max_temp') or {}).get('tmax', None)
+    max_temp_score = number_precise_scoring(single_max_temp, label_max_temp)
+    # 计算 other_temp 部分的温度准确率
+    other_regions_temp_score = get_range_score_for_temp_by_station_id_list(
+        get_other_station_id(single_result_extracted_info), # 获取 other 部分的站点 id
+        single_result_extracted_info.get('other_temp', {}),
+        qid
+    )
+    # 计算 specific_regions 部分的温度准确率
+    specific_regions_temp_scores = []
+    for region in single_result_extracted_info.get('specific_regions', []):
+        region_temp_score = get_range_score_for_temp_by_station_id_list(
+            geo_list_to_stationid(region.get('std_geo', [])),
+            region,
+            qid
+        )
+        specific_regions_temp_scores.append(region_temp_score)
+    
+    return {
+        'max_temp_score': max_temp_score,
+        'other_regions_temp_score': other_regions_temp_score,
+        'specific_regions_temp_scores': specific_regions_temp_scores
+
+    }
+
+
+def get_range_score_for_temp_by_station_id_list(station_id_list, region_info, qid):
+    actual_temp_lower, actual_temp_upper = get_actual_temp_lower_upper(station_id_list, qid)
+    pred_temp_lower = region_info.get('tmax_min', None)
+    pred_temp_upper = region_info.get('tmax_max', None)
+    range_score = number_range_scoring(
+        (pred_temp_lower, pred_temp_upper),
+        (actual_temp_lower, actual_temp_upper)
+    )
+    return {
+        'actual_tmax_min': actual_temp_lower,
+        'actual_tmax_max': actual_temp_upper,
+        'range_score': range_score
+    }
+
+
+def get_actual_temp_lower_upper(station_id_list, qid):
+    temp_list = get_actual_temp_list(station_id_list, qid)
+    temp_list_no_outliers = remove_outliers(temp_list)
+    if len(temp_list_no_outliers) == 0:
+        return None, None
+    return min(temp_list_no_outliers), max(temp_list_no_outliers)
+
+
+def get_actual_temp_list(station_id_list, qid) -> List[float]:
+    # 加载 csv 数据
+    temp_csv_path = LABEL_DICT[qid]['input']['csv_data_path']
+    csv_path = os.path.join(CSV_FOLDER, temp_csv_path)
+    df = pd.read_csv(csv_path)
+    # df 的 stationid 列转为 str
+    df['stationid'] = df['stationid'].astype(str)
+    # 按照 stationid 筛选
+    temp_list = []
+    for station_id in station_id_list:
+        temp_value = df.loc[df['stationid'] == station_id, 'tmax'].values
+        if len(temp_value) > 0:
+            temp_list.append(float(temp_value[0]))
+        else:
+            print(f"Station ID {station_id} not found in CSV for QID {qid}.")
+    return temp_list
+
+
+# 通过标准差去除离群值
+def remove_outliers(temp_list: List[float]) -> List[float]:
+    if len(temp_list) == 0:
+        return temp_list
+    mean_temp = sum(temp_list) / len(temp_list)
+    variance = sum((x - mean_temp) ** 2 for x in temp_list) / len(temp_list)
+    std_dev = variance ** 0.5
+    # 设定阈值，通常为 2 或 3 个标准差
+    threshold = 2 * std_dev
+    # 过滤掉离群值
+    filtered_temps = [x for x in temp_list if abs(x - mean_temp) <= threshold]
+    return filtered_temps
 
 
 ############# 主逻辑

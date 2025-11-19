@@ -1,6 +1,13 @@
-from typing import Any, Dict, List
+import math
+
+from typing import Any, Dict, List, Tuple
 from scipy.optimize import linear_sum_assignment
 from evaluation.util import geo_list_to_stationid
+
+
+def round_half_up(x: float) -> int:
+    return math.floor(x + 0.5) if x >= 0 else math.ceil(x - 0.5)
+
 
 def set_iou(pred_set: set, label_set: set) -> float:
     """计算两个集合的set iou"""
@@ -23,6 +30,9 @@ def geo_list_iou(pred_geo_list: List[str], label_geo_list: List[str]) -> float:
 
 def number_precise_scoring(predicted: float, actual: float) -> float:
     """根据预测值和实际值的差距，返回精度评分"""
+    if predicted is None or actual is None:
+        return 0.0
+    
     diff = abs(actual - predicted)
 
     if diff < 0.09:
@@ -34,6 +44,34 @@ def number_precise_scoring(predicted: float, actual: float) -> float:
     else:
         return 0.0
     
+
+def number_round_scoring(predicted: float, actual: float) -> float:
+    """根据预测值和实际值四舍五入后的差距，返回评分"""
+    if predicted is None or actual is None:
+        return 0.0
+
+    actual_round = round_half_up(actual)
+    predicted_round = round_half_up(predicted)
+    diff = abs(actual_round - predicted_round)
+    
+    if diff == 0:
+        return 1.0
+    elif diff == 1:
+        return 0.5
+    elif diff == 2:
+        return 0.1
+    else:
+        return 0.0
+    
+
+def number_range_scoring(predicted_range: Tuple, actual_range: Tuple) -> float:
+    """根据预测范围和实际范围的差距，返回评分"""
+    
+    lower_score = number_round_scoring(actual_range[0], predicted_range[0])
+    upper_score = number_round_scoring(actual_range[1], predicted_range[1])
+    
+    return (lower_score + upper_score) / 2
+
 
 def geo_list_match_and_iou(pred_geo_list_list: List[List[str]], label_geo_list_list: List[List[str]]) -> Dict[str, Any]:
     """使用匈牙利算法为 geo_list_list 配对并统计 IoU"""
