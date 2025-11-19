@@ -55,12 +55,14 @@ def summary(model_result: List[Dict[str, Any]]) -> Dict[str, Any]:
     """汇总所有样本的平均得分，便于整体评估模型表现。"""
     def _append_value(container: List[float], value: Optional[float]) -> None:
         if value is None:
+            print("Warning: None value encountered in scoring summary.")
             return
         container.append(float(value))
 
     def _average(values: List[float]) -> Optional[float]:
         return sum(values) / len(values) if values else None
 
+    # 用 list 收集各项得分，最后计算平均值
     geo_metrics = {
         'max_temp_geo_iou': [],
         'other_regions_geo_iou': [],
@@ -72,21 +74,28 @@ def summary(model_result: List[Dict[str, Any]]) -> Dict[str, Any]:
         'specific_regions_range_score': [],
     }
 
+    # 遍历所有样本，收集各项得分
     for single_result in model_result:
+        # 提取 accuracy_score 字段
         accuracy_score = single_result.get('accuracy_score') or {}
         geo_accuracy = accuracy_score.get('geo_accuracy') or {}
         temp_accuracy = accuracy_score.get('temp_accuracy') or {}
 
+        # 收集地理维度得分
         _append_value(geo_metrics['max_temp_geo_iou'], geo_accuracy.get('max_temp_geo_iou'))
         _append_value(geo_metrics['other_regions_geo_iou'], geo_accuracy.get('other_regions_geo_iou'))
         specific_geo_score = geo_accuracy.get('specific_regions_geo_iou') or {}
         _append_value(geo_metrics['specific_regions_geo_avg_iou'], specific_geo_score.get('avg_iou'))
 
+        # 收集温度维度得分
         _append_value(temp_metrics['max_temp_score'], temp_accuracy.get('max_temp_score'))
         other_temp_score = temp_accuracy.get('other_regions_temp_score') or {}
         _append_value(temp_metrics['other_regions_range_score'], other_temp_score.get('range_score'))
+        # 对 specific_regions 先计算平均分数
+        specific_region_scores = []
         for region_score in temp_accuracy.get('specific_regions_temp_scores') or []:
-            _append_value(temp_metrics['specific_regions_range_score'], (region_score or {}).get('range_score'))
+            _append_value(specific_region_scores, region_score.get('range_score'))
+        _append_value(temp_metrics['specific_regions_range_score'], _average(specific_region_scores))
 
     return {
         'total_samples': len(model_result),
