@@ -1,8 +1,7 @@
 import pandas as pd
-from model.client import ModelClient
 from model.call_api import call_llm_for_data_cleaning_or_analysis
-from util.data_process import get_geo_division, str_to_json
 from prompt.evaluation_prompt import UTIL_PROMPT
+from util.data_process import get_geo_division, str_to_json
 
 
 def get_geo_stationid_map() -> dict[str, list[str]]:
@@ -49,6 +48,8 @@ def get_station_id_set():
 
 def geo_standardize(geo_list: list[str]) -> list[str]:
     """对地理位置名称进行标准化处理"""
+    from model.client import ModelClient
+
     client = ModelClient()
     # 加载标准化的地理位置名称列表和字典
     std_geo_list = get_geo_list()
