@@ -1,5 +1,6 @@
-from openai import OpenAI
+import time
 
+from openai import OpenAI, RateLimitError
 from util.config import load_config
 
 
@@ -19,12 +20,23 @@ class ModelClient:
         return api_config
 
     def chat_with_messages(self, model: str, messages: list, **kwargs) -> dict:
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=messages,
-            **kwargs
-        )
-        return response
+        PENDING_SECOND = 5
+        MAX_ATTEMPTS = 5
+        attempts = 0
+        while attempts < MAX_ATTEMPTS:
+            try:
+                attempts += 1
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    **kwargs
+                )
+                return response
+            except RateLimitError:
+                # 若 429 rate limiting 错误，则暂停重试
+                print(f"Rate limit exceeded. Pending for {PENDING_SECOND} second...")
+                time.sleep(PENDING_SECOND)
+        raise RuntimeError("Maximum retry attempts reached for chat completion request.")
     
     def chat_with_messages_return_text(self, model: str, messages: list, **kwargs) -> str:
         response = self.chat_with_messages(model=model, messages=messages, **kwargs)

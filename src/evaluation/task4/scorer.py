@@ -1,23 +1,29 @@
+from copy import deepcopy
+from typing import Any, Dict, List
+
 from evaluation.scorer_two_stage import TwoStageScorer
+from evaluation.util import geo_standardize
 from model.client import ModelClient
 from model.call_api import call_llm_for_data_cleaning_or_analysis
 from prompt.evaluation_prompt import TASK4_PROMPT
 from util.data_process import save_json, str_to_json
-from copy import deepcopy
-from evaluation.util import geo_standardize
 from util.multi_thread import run_in_threads
+
+MAX_EXTRACTION_ATTEMPTS = 5
+
 
 class Task4Scorer(TwoStageScorer):
     """Task4 评分器：负责信息抽取+两阶段评分的调度"""
+
     def __init__(self, result_folder: str = 'result/evaluation') -> None:
         super().__init__(result_folder=result_folder)
         self.name = 'task4'
 
 
-    def info_extract(self, model_result):
-        """信息抽取接口实现，首先调用大模型提取结构化信息，然后对地理位置进行规范化"""
-        # 处理 model_result，提取所需信息
-        self.client = ModelClient()  # 初始化客户端，避免在多线程中重复创建
+    def info_extract(self, model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        信息抽取接口实现：调用 LLM 提取结构化信息，再做地理位置规范化
+        """
 
         model_result_with_extract_info = self.info_extract_by_llm(model_result)
 
@@ -30,37 +36,37 @@ class Task4Scorer(TwoStageScorer):
         return model_result_with_extract_info_geo_standardize
 
 
-    def info_scoring(self, extracted_info):
-        # Implement the scoring logic specific to Task 4
-        scoring_result = {}
-        # ... scoring code ...
-        return scoring_result
+    def info_scoring(self, extracted_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Task4 评分逻辑留空，由上层根据具体评估策略实现"""
+        return {}
 
 
-    def geo_standardize(self, old_model_result):
+    def geo_standardize(self, old_model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """对地理区域字段做标准化，确保后续评分数据可比"""
         model_result = deepcopy(old_model_result)
         args_list_dict = {
             "single_result": model_result,
         }
 
         # 多线程向模型发送请求，提升批量效率
-        results = run_in_threads(self.geo_standardize_single, args_list_dict, max_workers=20)
+        results = run_in_threads(self.geo_standardize_single, args_list_dict, max_workers=5)
 
         return results
     
 
-    def geo_standardize_single(self, single_result):
+    def geo_standardize_single(self, single_result: Dict[str, Any]) -> Dict[str, Any]:
+        """单条结果的地理信息标准化"""
         single_info = single_result['extracted_info']
         geo_set = set()
+        # 收集所有出现过的地理描述，避免重复调用标准化接口
         for region in single_info['specific_regions']:
             geo_set.update(region['geo'])
         if single_info['max_temp'] is not None:
             geo_set.update(single_info['max_temp']['geo'])
 
-        std_geo_list = geo_standardize(list(geo_set))
-        ori_std_geo_map = {}
-        for ori_geo, std_geo in zip(geo_set, std_geo_list):
-            ori_std_geo_map[ori_geo] = std_geo
+        geo_list = list(geo_set)
+        std_geo_list = geo_standardize(geo_list)
+        ori_std_geo_map = {ori_geo: std_geo for ori_geo, std_geo in zip(geo_list, std_geo_list)}
 
         for i, region in enumerate(single_info['specific_regions']):
             single_info['specific_regions'][i]['std_geo'] = [ori_std_geo_map[g] for g in region['geo']]
@@ -71,69 +77,58 @@ class Task4Scorer(TwoStageScorer):
 
         return single_result
 
-    def info_extract_by_llm(self, old_model_result):
+    def info_extract_by_llm(self, old_model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """使用 LLM 对模型输出进行信息抽取，返回带有抽取结果的列表"""
         model_result = deepcopy(old_model_result)
-        pending_indices = list(range(len(model_result)))
-        invalid_payloads = {}
-        max_attempts = 5
+        args_list_dict = {
+            "single_result": model_result,
+        }
+
+        results = run_in_threads(self.info_extract_by_llm_single, args_list_dict, max_workers=5)
+        return results
+
+
+    def info_extract_by_llm_single(self, single_result: Dict[str, Any]) -> Dict[str, Any]:
+        """单条结果的信息抽取，多次重试直至成功或达到上限"""
+        client = ModelClient()
+
         attempts = 0
-
-        while pending_indices and attempts < max_attempts:
-            print(f"Info extraction attempt {attempts + 1}, pending items: {len(pending_indices)}")
+        invalid_payload = None
+        while attempts < MAX_EXTRACTION_ATTEMPTS:
             attempts += 1
-            extracted_infos = self.natural_language_to_json_format(
-                [model_result[idx]['model_output'] for idx in pending_indices]
-            )
+            if attempts > 1:
+                print(f"Retrying extraction for attempt {attempts}...")
+            prompt = TASK4_PROMPT.EXTRACT_INFO.format(original_text=single_result['model_output'])
+            try:
+                extracted_info = call_llm_for_data_cleaning_or_analysis(
+                    client=client,
+                    model="deepseek-ai/DeepSeek-V3",
+                    prompt=prompt,
+                )
+            except Exception as e:
+                print(f"Error calling LLM: {e}")
+                invalid_payload = str(e)
+                continue
 
-            next_pending = []
-            for idx, extracted_info in zip(pending_indices, extracted_infos):
-                json_res = None
-                is_valid = False
+            json_res = None
+            try:
+                json_res = str_to_json(extracted_info)
+                is_valid = self.validate_extracted_info(json_res)
+                if is_valid:
+                    single_result['extracted_info'] = json_res
+                    return single_result
+                print(f"Invalid extracted_info format: {json_res}")
+                invalid_payload = json_res
+            except Exception as e:
+                print(f"Error parsing extracted_info: {e}")
+                invalid_payload = extracted_info
 
-                try:
-                    json_res = str_to_json(extracted_info)
-                    is_valid = self.validate_extracted_info(json_res)
-                    if not is_valid:
-                        print(f"Invalid extracted_info format for index {idx}: {json_res}")
-                    else:
-                        model_result[idx]['extracted_info'] = json_res
-                        if idx in invalid_payloads:
-                            invalid_payloads.pop(idx)
-                except Exception as e:
-                    print(f"Error parsing extracted_info for index {idx}: {e}")
-
-                if not is_valid:
-                    next_pending.append(idx)
-                    invalid_payloads[idx] = json_res if json_res is not None else extracted_info
-
-            pending_indices = next_pending
-
-        # 经过多次尝试仍无法通过校验的结果使用 error_res 标记
-        for idx in pending_indices:
-            model_result[idx]['extracted_info'] = {"error_res": invalid_payloads.get(idx)}
-        
-        return model_result
+        single_result['extracted_info'] = {"error_res": invalid_payload}
+        return single_result
 
 
-    def natural_language_to_json_format(self, nl_texts: list) -> dict:
-        """将自然语言描述转化为结构化 JSON"""
-        prompt = TASK4_PROMPT.EXTRACT_INFO  # 固定提示词模板
-        orgnized_prompts = [prompt.format(original_text=nl_text) for nl_text in nl_texts]
-
-        # 多线程向模型发送请求，提升批量抽取效率
-        extracted_infos = call_llm_for_data_cleaning_or_analysis(
-            client=self.client,
-            model="deepseek-ai/DeepSeek-V3",
-            prompts=orgnized_prompts,
-            max_workers=20
-        )
-        return extracted_infos
-
-
-    def validate_extracted_info(self, extracted_info: dict) -> bool:
+    def validate_extracted_info(self, extracted_info: Dict[str, Any]) -> bool:
         """校验抽取结果的格式是否符合预期"""
-        # 判断字段是否齐全
         required_fields = ['specific_regions', 'other_regions', 'max_temp']
         for field in required_fields:
             if field not in extracted_info:
