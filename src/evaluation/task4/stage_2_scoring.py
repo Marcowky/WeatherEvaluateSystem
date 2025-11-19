@@ -1,35 +1,53 @@
+"""Task4 阶段二：为抽取结果计算地理与温度评分"""
+
 import os
 import sys
+from copy import deepcopy
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+import pandas as pd
+from tqdm import tqdm
 
 # 允许脚本在直接运行时也能加载 src 下的模块
 sys.path.append('src')
 
-from util.data_process import load_json, save_json
-from typing import Any, Dict, List
-from evaluation.metric import geo_list_iou, number_range_scoring, set_iou, geo_list_match_and_iou, number_precise_scoring
+from evaluation.metric import (geo_list_iou, geo_list_match_and_iou,
+                               number_precise_scoring, number_range_scoring,
+                               set_iou)
 from evaluation.util import geo_list_to_stationid, get_station_id_set
-from tqdm import tqdm
-import pandas as pd
+from util.data_process import load_json, save_json
 
+# ------------------------- 默认路径配置 -------------------------
 CSV_FOLDER = "/home/kaiyu/Project/WeatherEvaluateSystem/data/task4/2024/tmax"
+LABEL_JSON_PATH = "/home/kaiyu/Project/WeatherEvaluateSystem/data/newspaper/task4/qa_data_info_extract_geo_standardize.json"
+DEFAULT_INPUT_PATH = "/home/kaiyu/Project/WeatherEvaluateSystem/result/evaluation/task4/Qwen2.5-VL-7B-Instruct/task4_info_extract_geo_standardize.json"
+DEFAULT_OUTPUT_PATH = "/home/kaiyu/Project/WeatherEvaluateSystem/result/evaluation/task4/Qwen2.5-VL-7B-Instruct/task4_scoring.json"
 
-def get_label_dict():
-    """加载标准答案，构建字典以便快速查询"""
-    label_data = load_json('/home/kaiyu/Project/WeatherEvaluateSystem/data/newspaper/task4/qa_data_info_extract_geo_standardize.json')
-    label_dict = {}
+
+def get_label_dict(label_path: str) -> Dict[str, Any]:
+    """加载标准答案，构建 {qid: 标准答案条目} 的查询字典。"""
+    label_data = load_json(label_path)
+    label_dict: Dict[str, Any] = {}
     for item in label_data:
         label_dict[item['qid']] = item
     return label_dict
 
-LABEL_DICT = get_label_dict()
+
+LABEL_DICT = get_label_dict(LABEL_JSON_PATH)
 
 
 def accuracy_scoring(model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """对抽取结果进行准确率评分"""
-    for i, single_result in enumerate(tqdm(model_result, desc="Scoring accuracy")):
+    """
+    批量执行评分：
+    1. 深拷贝输入，避免覆盖上游数据；
+    2. 为每条样本添加 accuracy_score 字段；
+    3. 返回带评分的新列表。
+    """
+    scored_result = deepcopy(model_result)
+    for single_result in tqdm(scored_result, desc="Scoring accuracy"):
         # 每个样本单独计算得分，保证评分的可追溯性
-        model_result[i]['accuracy_score'] = accuracy_scoring_single(single_result)
-    return model_result
+        single_result['accuracy_score'] = accuracy_scoring_single(single_result)
+    return scored_result
 
 
 def accuracy_scoring_single(single_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -43,8 +61,8 @@ def accuracy_scoring_single(single_result: Dict[str, Any]) -> Dict[str, Any]:
     return accuracy_score
 
 
-def geo_accuracy_scoring(single_result: Dict[str, Any]):
-    """对单个抽取结果进行准确率评分"""
+def geo_accuracy_scoring(single_result: Dict[str, Any]) -> Dict[str, float]:
+    """计算地理维度的三个子项 IoU 分数。"""
     single_result_extracted_info = single_result['extracted_info']
     # 根据 qid 获取标准答案的抽取结果
     label_extracted_info = LABEL_DICT[single_result['qid']]['extracted_info']
@@ -71,16 +89,16 @@ def geo_accuracy_scoring(single_result: Dict[str, Any]):
 
 
 def get_std_geo_list(extracted_info: Dict[str, Any]) -> List[List[str]]:
-    """获取 specific_regions 和 max_temp 部分的标准化地理位置列表"""
+    """获取 specific_regions 中每条数据的标准化地理列表。"""
     geo_list_list = []
     for region in extracted_info.get('specific_regions', []):
         geo_list_list.append(region.get('std_geo', []))
     return geo_list_list
 
 
-def get_other_station_id(extracted_info: Dict[str, Any]) -> set:
-    """获取 other 部分的 station id 集合"""
-    stationid_without_other = set()
+def get_other_station_id(extracted_info: Dict[str, Any]) -> Set[str]:
+    """获取除 specific_regions / max_temp 外其余站点对应的 station id 集合。"""
+    stationid_without_other: Set[str] = set()
     # 收集 specific_regions 占用的 station id
     for region in extracted_info.get('specific_regions', []):
         stationid_without_other.update(geo_list_to_stationid(region.get('std_geo', [])))
@@ -92,8 +110,8 @@ def get_other_station_id(extracted_info: Dict[str, Any]) -> set:
     return other_station_id
 
 
-def temp_accuracy_scoring(single_result: Dict[str, Any]):
-    """对单个抽取结果进行准确率评分"""
+def temp_accuracy_scoring(single_result: Dict[str, Any]) -> Dict[str, Any]:
+    """计算温度维度的单值与区间得分。"""
     qid = single_result['qid']
     single_result_extracted_info = single_result['extracted_info']
     # 根据 qid 获取标准答案的抽取结果
@@ -105,7 +123,7 @@ def temp_accuracy_scoring(single_result: Dict[str, Any]):
     # 计算 other_temp 部分的温度准确率
     other_regions_temp_score = get_range_score_for_temp_by_station_id_list(
         get_other_station_id(single_result_extracted_info), # 获取 other 部分的站点 id
-        single_result_extracted_info.get('other_temp', {}),
+        single_result_extracted_info.get('other_regions', {}) if single_result_extracted_info.get('other_regions') else {},
         qid
     )
     # 计算 specific_regions 部分的温度准确率
@@ -126,7 +144,12 @@ def temp_accuracy_scoring(single_result: Dict[str, Any]):
     }
 
 
-def get_range_score_for_temp_by_station_id_list(station_id_list, region_info, qid):
+def get_range_score_for_temp_by_station_id_list(
+    station_id_list: Iterable[str],
+    region_info: Dict[str, Any],
+    qid: str,
+) -> Dict[str, Optional[float]]:
+    """根据站点集合计算实际温度区间，并与模型区间作 number_range_scoring。"""
     actual_temp_lower, actual_temp_upper = get_actual_temp_lower_upper(station_id_list, qid)
     pred_temp_lower = region_info.get('tmax_min', None)
     pred_temp_upper = region_info.get('tmax_max', None)
@@ -141,7 +164,11 @@ def get_range_score_for_temp_by_station_id_list(station_id_list, region_info, qi
     }
 
 
-def get_actual_temp_lower_upper(station_id_list, qid):
+def get_actual_temp_lower_upper(
+    station_id_list: Iterable[str],
+    qid: str,
+) -> Tuple[Optional[float], Optional[float]]:
+    """从站点列表获取实际温度的上下界（去除离群值后）。"""
     temp_list = get_actual_temp_list(station_id_list, qid)
     temp_list_no_outliers = remove_outliers(temp_list)
     if len(temp_list_no_outliers) == 0:
@@ -149,7 +176,8 @@ def get_actual_temp_lower_upper(station_id_list, qid):
     return min(temp_list_no_outliers), max(temp_list_no_outliers)
 
 
-def get_actual_temp_list(station_id_list, qid) -> List[float]:
+def get_actual_temp_list(station_id_list: Iterable[str], qid: str) -> List[float]:
+    """读取对应 csv，提取 stationid 的 tmax 序列。"""
     # 加载 csv 数据
     temp_csv_path = LABEL_DICT[qid]['input']['csv_data_path']
     csv_path = os.path.join(CSV_FOLDER, temp_csv_path)
@@ -167,8 +195,8 @@ def get_actual_temp_list(station_id_list, qid) -> List[float]:
     return temp_list
 
 
-# 通过标准差去除离群值
 def remove_outliers(temp_list: List[float]) -> List[float]:
+    """通过均值 ± 2σ 的方式去除温度离群值。"""
     if len(temp_list) == 0:
         return temp_list
     mean_temp = sum(temp_list) / len(temp_list)
@@ -183,15 +211,16 @@ def remove_outliers(temp_list: List[float]) -> List[float]:
 
 ############# 主逻辑
 
-def main():
+def main(input_path: str = DEFAULT_INPUT_PATH, output_path: str = DEFAULT_OUTPUT_PATH) -> None:
+    """命令行入口：读取默认输入，执行评分并写入结果。"""
     # 加载 json 数据
-    model_result = load_json('/home/kaiyu/Project/WeatherEvaluateSystem/result/evaluation/task4/Qwen2.5-VL-7B-Instruct/task4_info_extract_geo_standardize.json')
+    model_result = load_json(input_path)
 
     # 逐条打分并附在原始结果中
     model_result_with_accuracy_score = accuracy_scoring(model_result)
 
     # 保存 json 数据
-    save_json(model_result_with_accuracy_score, '/home/kaiyu/Project/WeatherEvaluateSystem/result/evaluation/task4/Qwen2.5-VL-7B-Instruct/task4_scoring.json')
+    save_json(model_result_with_accuracy_score, output_path)
 
 if __name__ == '__main__':
     main()
