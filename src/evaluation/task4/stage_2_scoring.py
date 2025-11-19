@@ -22,6 +22,7 @@ CSV_FOLDER = "/home/kaiyu/Project/WeatherEvaluateSystem/data/task4/2024/tmax"
 LABEL_JSON_PATH = "/home/kaiyu/Project/WeatherEvaluateSystem/data/newspaper/task4/qa_data_info_extract_geo_standardize.json"
 DEFAULT_INPUT_PATH = "/home/kaiyu/Project/WeatherEvaluateSystem/result/evaluation/task4/Qwen2.5-VL-7B-Instruct/task4_info_extract_geo_standardize.json"
 DEFAULT_OUTPUT_PATH = "/home/kaiyu/Project/WeatherEvaluateSystem/result/evaluation/task4/Qwen2.5-VL-7B-Instruct/task4_scoring.json"
+SUMMARY_OUTPUT_PATH = DEFAULT_OUTPUT_PATH.replace('.json', '_summary.json')
 
 
 def get_label_dict(label_path: str) -> Dict[str, Any]:
@@ -48,6 +49,58 @@ def accuracy_scoring(model_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         # 每个样本单独计算得分，保证评分的可追溯性
         single_result['accuracy_score'] = accuracy_scoring_single(single_result)
     return scored_result
+
+
+def summary(model_result: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """汇总所有样本的平均得分，便于整体评估模型表现。"""
+    def _append_value(container: List[float], value: Optional[float]) -> None:
+        if value is None:
+            return
+        container.append(float(value))
+
+    def _average(values: List[float]) -> Optional[float]:
+        return sum(values) / len(values) if values else None
+
+    geo_metrics = {
+        'max_temp_geo_iou': [],
+        'other_regions_geo_iou': [],
+        'specific_regions_geo_avg_iou': [],
+    }
+    temp_metrics = {
+        'max_temp_score': [],
+        'other_regions_range_score': [],
+        'specific_regions_range_score': [],
+    }
+
+    for single_result in model_result:
+        accuracy_score = single_result.get('accuracy_score') or {}
+        geo_accuracy = accuracy_score.get('geo_accuracy') or {}
+        temp_accuracy = accuracy_score.get('temp_accuracy') or {}
+
+        _append_value(geo_metrics['max_temp_geo_iou'], geo_accuracy.get('max_temp_geo_iou'))
+        _append_value(geo_metrics['other_regions_geo_iou'], geo_accuracy.get('other_regions_geo_iou'))
+        specific_geo_score = geo_accuracy.get('specific_regions_geo_iou') or {}
+        _append_value(geo_metrics['specific_regions_geo_avg_iou'], specific_geo_score.get('avg_iou'))
+
+        _append_value(temp_metrics['max_temp_score'], temp_accuracy.get('max_temp_score'))
+        other_temp_score = temp_accuracy.get('other_regions_temp_score') or {}
+        _append_value(temp_metrics['other_regions_range_score'], other_temp_score.get('range_score'))
+        for region_score in temp_accuracy.get('specific_regions_temp_scores') or []:
+            _append_value(temp_metrics['specific_regions_range_score'], (region_score or {}).get('range_score'))
+
+    return {
+        'total_samples': len(model_result),
+        'geo_accuracy': {
+            'max_temp_geo_iou': _average(geo_metrics['max_temp_geo_iou']),
+            'other_regions_geo_iou': _average(geo_metrics['other_regions_geo_iou']),
+            'specific_regions_geo_avg_iou': _average(geo_metrics['specific_regions_geo_avg_iou']),
+        },
+        'temp_accuracy': {
+            'max_temp_score': _average(temp_metrics['max_temp_score']),
+            'other_regions_range_score': _average(temp_metrics['other_regions_range_score']),
+            'specific_regions_range_score': _average(temp_metrics['specific_regions_range_score']),
+        }
+    }
 
 
 def accuracy_scoring_single(single_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -211,16 +264,21 @@ def remove_outliers(temp_list: List[float]) -> List[float]:
 
 ############# 主逻辑
 
-def main(input_path: str = DEFAULT_INPUT_PATH, output_path: str = DEFAULT_OUTPUT_PATH) -> None:
+def main(input_path: str = DEFAULT_INPUT_PATH, output_path: str = DEFAULT_OUTPUT_PATH, summary_output_path: str = SUMMARY_OUTPUT_PATH) -> None:
     """命令行入口：读取默认输入，执行评分并写入结果。"""
     # 加载 json 数据
     model_result = load_json(input_path)
 
     # 逐条打分并附在原始结果中
     model_result_with_accuracy_score = accuracy_scoring(model_result)
+    summary_result = summary(model_result_with_accuracy_score)
 
     # 保存 json 数据
     save_json(model_result_with_accuracy_score, output_path)
+    
+    # 保存 summary 文件
+    print("Summary scores:", summary_result)
+    save_json(summary_result, summary_output_path)
 
 if __name__ == '__main__':
     main()
