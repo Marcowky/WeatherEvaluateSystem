@@ -40,6 +40,13 @@ def get_geo_list():
     return std_geo_list
 
 
+def get_station_id_set():
+    """获取所有站点ID的集合"""
+    geo_division_df = get_geo_division()
+    station_id_set = set(geo_division_df['站号+A:K'].tolist())
+    return station_id_set
+
+
 def geo_standardize(geo_list: list[str]) -> list[str]:
     """对地理位置名称进行标准化处理"""
     client = ModelClient()
@@ -112,3 +119,15 @@ def geo_standardize_by_llm(client, std_geo_list, std_geo_dict_list, geo_list: li
             print(f"Error during geo standardization: {e}")
 
     return [geo_map_dict[geo] for geo in geo_list]
+
+
+def geo_list_to_stationid(geo_list: list[str]) -> list[str]:
+    """将地理位置名称转换为对应的站点ID列表"""
+    geo_stationid_map = get_geo_stationid_map()
+    stationid_set = set()
+    for geo in geo_list:
+        if geo in geo_stationid_map:
+            stationid_set.update(geo_stationid_map[geo])
+    # 从小到大排序返回站点ID列表
+    stationid_list = sorted(list(stationid_set))
+    return stationid_list
